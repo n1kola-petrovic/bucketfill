@@ -1,2 +1,2 @@
 # bucketfill
-Go library for bucket storage seeds and migrations
+Go package for bucket storage seeds and migrations
