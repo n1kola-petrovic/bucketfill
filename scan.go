@@ -62,12 +62,6 @@ func Scan(migrationDir string) ([]VersionDir, error) {
 		seen[v] = e.Name()
 
 		path := filepath.Join(abs, e.Name())
-		if err := requireFile(path, "up.go"); err != nil {
-			return nil, err
-		}
-		if err := requireFile(path, "down.go"); err != nil {
-			return nil, err
-		}
 		dirs = append(dirs, VersionDir{
 			Version: v,
 			Path:    path,
@@ -93,16 +87,5 @@ func NextVersion(migrationDir string) (int, error) {
 		return 1, nil
 	}
 	return dirs[len(dirs)-1].Version + 1, nil
-}
-
-func requireFile(dir, name string) error {
-	p := filepath.Join(dir, name)
-	if _, err := os.Stat(p); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("bucketfill: missing %s in %s", name, dir)
-		}
-		return fmt.Errorf("bucketfill: stat %s: %w", p, err)
-	}
-	return nil
 }
 

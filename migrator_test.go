@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/n1kola-petrovic/bucketfill"
 	"github.com/n1kola-petrovic/bucketfill/provider/fs"
@@ -228,6 +229,77 @@ type captureLogger struct {
 
 func (c *captureLogger) Logf(format string, args ...any) {
 	c.lines = append(c.lines, fmt.Sprintf(format, args...))
+}
+
+func TestRegisterFS_AutoRegistersDefaults(t *testing.T) {
+	bucketfill.ResetMigrations()
+	defer bucketfill.ResetMigrations()
+
+	fsys := fstest.MapFS{
+		"v1/data/seeds/a.txt": {Data: []byte("a")},
+		"v2/data/seeds/b.txt": {Data: []byte("b")},
+		"README.md":           {Data: []byte("ignored")},
+		"v3/data/.keep":       {Data: nil}, // empty version
+	}
+
+	if err := bucketfill.RegisterFS(fsys); err != nil {
+		t.Fatalf("RegisterFS: %v", err)
+	}
+
+	got := bucketfill.Migrations()
+	if len(got) != 3 {
+		t.Fatalf("got %d migrations, want 3", len(got))
+	}
+	for i, want := range []int{1, 2, 3} {
+		if got[i].Version != want {
+			t.Errorf("migrations[%d].Version = %d, want %d", i, got[i].Version, want)
+		}
+		if got[i].Up == nil || got[i].Down == nil {
+			t.Errorf("v%d missing Up/Down", got[i].Version)
+		}
+		if got[i].Data == nil {
+			t.Errorf("v%d Data is nil", got[i].Version)
+		}
+	}
+}
+
+func TestRegisterFS_PreservesExistingRegistrations(t *testing.T) {
+	bucketfill.ResetMigrations()
+	defer bucketfill.ResetMigrations()
+
+	customRan := false
+	bucketfill.Register(&bucketfill.Migration{
+		Version: 2,
+		Up: func(ctx context.Context, c *bucketfill.Client) error {
+			customRan = true
+			return nil
+		},
+		Down: func(ctx context.Context, c *bucketfill.Client) error { return nil },
+	})
+
+	fsys := fstest.MapFS{
+		"v1/data/a.txt": {Data: []byte("a")},
+		"v2/data/b.txt": {Data: []byte("b")}, // would default-register but v2 already exists
+	}
+	if err := bucketfill.RegisterFS(fsys); err != nil {
+		t.Fatalf("RegisterFS: %v", err)
+	}
+
+	all := bucketfill.Migrations()
+	if len(all) != 2 {
+		t.Fatalf("got %d migrations, want 2", len(all))
+	}
+
+	// v2 should still be the user's custom one, not the default.
+	root := t.TempDir()
+	storage := fs.New(root)
+	m := bucketfill.NewMigrator(bucketfill.NewClient(storage, "test"))
+	if err := m.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if !customRan {
+		t.Error("custom v2.Up did not run — RegisterFS overwrote the explicit registration")
+	}
 }
 
 func TestRegister_DuplicateVersionPanics(t *testing.T) {

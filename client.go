@@ -55,12 +55,12 @@ func (c *Client) Put(ctx context.Context, key string) error {
 
 // PutAll mirrors the migration's entire data/ tree into the bucket, preserving
 // nesting. Files are uploaded with the same relative path as their location
-// under data/.
+// under data/. A nil or non-existent dataFS is treated as a no-op.
 func (c *Client) PutAll(ctx context.Context) error {
 	if c.dataFS == nil {
 		return nil
 	}
-	return fs.WalkDir(c.dataFS, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(c.dataFS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -73,6 +73,10 @@ func (c *Client) PutAll(ctx context.Context) error {
 		}
 		return c.putFromFS(ctx, p, p)
 	})
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // DeleteAll removes from the bucket every key that has a corresponding entry
@@ -80,12 +84,12 @@ func (c *Client) PutAll(ctx context.Context) error {
 // calling PutAll in Up and DeleteAll in Down forms a clean round-trip.
 //
 // Only files present in the data/ tree are deleted — other bucket contents
-// are untouched.
+// are untouched. A nil or non-existent dataFS is treated as a no-op.
 func (c *Client) DeleteAll(ctx context.Context) error {
 	if c.dataFS == nil {
 		return nil
 	}
-	return fs.WalkDir(c.dataFS, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(c.dataFS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -97,6 +101,10 @@ func (c *Client) DeleteAll(ctx context.Context) error {
 		}
 		return c.storage.Delete(ctx, c.bucket, p)
 	})
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // PutFromPath uploads a file from an arbitrary local path on disk to the given

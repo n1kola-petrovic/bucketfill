@@ -23,9 +23,10 @@ func loadConfig() (*bucketfill.Config, error) {
 	})
 }
 
-// runEntryBinary regenerates cmd/migrate/main.go and shells out to
-// `go run ./cmd/migrate <sub> <extra...>`, passing the global flags through so
-// the entry binary's RunCLI sees the same configuration.
+// runEntryBinary ensures the static cmd/migrate scaffolding exists, then
+// shells out to `go run ./cmd/migrate <sub> <extra...>`. The entry binary
+// itself is static — adding new versions does not require regenerating it,
+// so this command does not rewrite it on every invocation.
 func runEntryBinary(sub string, extra []string) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -45,12 +46,16 @@ func runEntryBinary(sub string, extra []string) error {
 		return fmt.Errorf("bucketfill: this command must run from a Go module: %w", err)
 	}
 
-	if _, err := bucketfill.GenerateEntryBinary(".", modulePath, cfg.MigrationDir, versions); err != nil {
+	// Bootstrap the embed.go and entry binary if they don't exist yet (e.g.
+	// projects that scaffolded versions on an older bucketfill release).
+	if _, err := bucketfill.EnsureMigrationsEmbed(".", cfg.MigrationDir); err != nil {
 		return err
 	}
-	// Ensure go.sum has entries for the entry binary's transitive imports.
-	// Cheap if already tidy; necessary when blank-imported provider deps were
-	// added since the last time the user ran the toolchain.
+	if _, err := bucketfill.GenerateEntryBinary(".", modulePath, cfg.MigrationDir); err != nil {
+		return err
+	}
+	// Always tidy before `go run` — entry binary's blank-imported provider deps
+	// must be in go.sum, and tidy is cheap when there's nothing to do.
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Stdout = os.Stdout
 	tidy.Stderr = os.Stderr
