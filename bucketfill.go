@@ -30,7 +30,7 @@ type DownOpts struct {
 
 // Up applies all pending migrations.
 func Up(ctx context.Context, cfg *Config) error {
-	m, err := newMigrator(ctx, cfg)
+	m, err := newMigrator(cfg)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func Up(ctx context.Context, cfg *Config) error {
 
 // Down rolls back migrations. opts.To = -1 for a single-step rollback.
 func Down(ctx context.Context, cfg *Config, opts DownOpts) error {
-	m, err := newMigrator(ctx, cfg)
+	m, err := newMigrator(cfg)
 	if err != nil {
 		return err
 	}
@@ -51,14 +51,14 @@ func Down(ctx context.Context, cfg *Config, opts DownOpts) error {
 
 // Status prints registered migrations and which are applied.
 func Status(ctx context.Context, cfg *Config) error {
-	m, err := newMigrator(ctx, cfg)
+	m, err := newMigrator(cfg)
 	if err != nil {
 		return err
 	}
 	return m.Status(ctx)
 }
 
-func newMigrator(_ context.Context, cfg *Config) (*Migrator, error) {
+func newMigrator(cfg *Config) (*Migrator, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

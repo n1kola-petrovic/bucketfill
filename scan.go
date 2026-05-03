@@ -18,7 +18,6 @@ type VersionDir struct {
 	Version int
 	Path    string // absolute path to the version directory
 	PkgName string // e.g. "v1"
-	HasData bool   // true if a non-empty data/ folder exists
 }
 
 var versionFolderRE = regexp.MustCompile(`^v?(\d+)$`)
@@ -73,7 +72,6 @@ func Scan(migrationDir string) ([]VersionDir, error) {
 			Version: v,
 			Path:    path,
 			PkgName: fmt.Sprintf("v%d", v),
-			HasData: hasNonEmptyData(path),
 		})
 	}
 
@@ -106,19 +104,5 @@ func requireFile(dir, name string) error {
 		return fmt.Errorf("bucketfill: stat %s: %w", p, err)
 	}
 	return nil
-}
-
-func hasNonEmptyData(versionDir string) bool {
-	dataPath := filepath.Join(versionDir, "data")
-	entries, err := os.ReadDir(dataPath)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if e.Name() != ".keep" {
-			return true
-		}
-	}
-	return false
 }
 

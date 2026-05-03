@@ -17,10 +17,9 @@ const DefaultConfigFile = "bucketfill.yaml"
 const DefaultMigrationDir = "migrations"
 
 // Config is the runtime configuration shared between the lib and the CLI.
-//
-// Secrets (S3 access keys, GCS credential file paths) should come from env
-// vars or flags, not from the YAML file. The loader emits a warning if it
-// encounters secrets in YAML.
+// Secrets (S3 access keys) should come from env vars, never from the YAML
+// file — the AccessKeyID / SecretAccessKey fields are tagged `yaml:"-"` so
+// they are not parsed from yaml even if accidentally added to it.
 type Config struct {
 	Provider     string `yaml:"provider"`
 	Bucket       string `yaml:"bucket"`
@@ -77,11 +76,15 @@ func LoadConfig(o Overrides) (*Config, error) {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("bucketfill: parse %s: %w", configPath, err)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) || o.ConfigFile != "" {
-		// Missing default file is fine; missing explicitly-provided file is an error.
+	} else if errors.Is(err, os.ErrNotExist) {
+		// Missing default file is fine (we keep going with defaults+env+flags);
+		// an explicitly-named file that doesn't exist is a real error.
 		if o.ConfigFile != "" {
 			return nil, fmt.Errorf("bucketfill: read %s: %w", configPath, err)
 		}
+	} else {
+		// Other read failure (permission denied, IO error). Surface it.
+		return nil, fmt.Errorf("bucketfill: read %s: %w", configPath, err)
 	}
 
 	applyEnv(cfg)

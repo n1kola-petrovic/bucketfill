@@ -19,16 +19,15 @@ type State struct {
 	AppliedAt time.Time `json:"appliedAt"`
 }
 
-// readState reads the state file from the bucket. A missing file is treated as version 0.
+// readState reads the state file from the bucket. A missing object is treated
+// as version 0. Providers must wrap their not-found errors with %w of
+// os.ErrNotExist so this distinction works across fs / gcs / s3.
 func readState(ctx context.Context, storage ObjectStorage, bucket string) (State, error) {
 	rc, err := storage.Download(ctx, bucket, stateKey)
 	if err != nil {
-		if isNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return State{}, nil
 		}
-		// Providers may not all wrap os.ErrNotExist; treat any download error as
-		// "no state yet" only if the underlying error indicates a missing object.
-		// Conservative fallback: surface the error so users see real failures.
 		return State{}, fmt.Errorf("bucketfill: read state: %w", err)
 	}
 	defer rc.Close()
@@ -51,17 +50,4 @@ func writeState(ctx context.Context, storage ObjectStorage, bucket string, s Sta
 		return fmt.Errorf("bucketfill: marshal state: %w", err)
 	}
 	return storage.Upload(ctx, bucket, stateKey, bytes.NewReader(data), int64(len(data)), "application/json")
-}
-
-// isNotExist returns true when err signals a missing object across providers.
-// We check both os.ErrNotExist (FS provider) and a "not exist" substring as a
-// defensive fallback for cloud providers whose typed errors we don't bind to here.
-func isNotExist(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return true
-	}
-	return false
 }
