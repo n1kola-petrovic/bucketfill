@@ -269,10 +269,6 @@ The CLI doesn't actually run migrations itself. On `bucketfill new` it scaffolds
 
 That's why adding a new version means just `bucketfill new` + drop files into `data/`: the per-version `up.go`/`down.go` come pre-filled with sensible defaults, the embed glob picks up the new folder at compile time, and `register.go`'s `init()` wires it into the global registry that `cmd/migrate/main.go` triggers via blank import.
 
-## Status
-
-Early. The API may shift before `v1.0`. Issues and feedback welcome.
-
 ## License
 
 MIT — see `LICENSE`.
