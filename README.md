@@ -1,6 +1,6 @@
 # bucketfill
 
-Versioned seeds and migrations for object storage — like `golang-migrate` for SQL, but for buckets. Works with the local filesystem, Google Cloud Storage, and AWS S3 / S3-compatible services.
+Versioned seeds and migrations for object storage. Like `golang-migrate` for SQL, but for buckets. Works with the local filesystem, Google Cloud Storage, and AWS S3 / S3-compatible services.
 
 Each version lives in `migrations/v<N>/` with a `data/` folder (whose nesting mirrors the bucket layout) plus `up.go` and `down.go` Go files. The scaffolded `up.go` defaults to `c.PutAll(ctx)` (upload the whole `data/` tree) and `down.go` defaults to `c.DeleteAll(ctx)` (remove the same files) — but they're real Go files you can edit when a particular version needs custom logic.
 
