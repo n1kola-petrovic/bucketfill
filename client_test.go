@@ -110,6 +110,36 @@ func TestPut_FromDataFS(t *testing.T) {
 	}
 }
 
+func TestDeleteAll_MirrorsPutAll(t *testing.T) {
+	c, root := newClient(t)
+	ctx := context.Background()
+
+	dataFS := fstest.MapFS{
+		"seeds/a.txt":     {Data: []byte("a")},
+		"seeds/sub/b.txt": {Data: []byte("b")},
+		"seeds/.keep":     {Data: nil},
+	}
+	mc := c.WithData(dataFS)
+
+	if err := mc.PutAll(ctx); err != nil {
+		t.Fatalf("PutAll: %v", err)
+	}
+	for _, k := range []string{"seeds/a.txt", "seeds/sub/b.txt"} {
+		if _, err := os.Stat(filepath.Join(root, "test", k)); err != nil {
+			t.Fatalf("expected %s after PutAll: %v", k, err)
+		}
+	}
+
+	if err := mc.DeleteAll(ctx); err != nil {
+		t.Fatalf("DeleteAll: %v", err)
+	}
+	for _, k := range []string{"seeds/a.txt", "seeds/sub/b.txt"} {
+		if _, err := os.Stat(filepath.Join(root, "test", k)); !os.IsNotExist(err) {
+			t.Errorf("expected %s removed after DeleteAll, got err=%v", k, err)
+		}
+	}
+}
+
 func TestRename_AndList(t *testing.T) {
 	c, _ := newClient(t)
 	ctx := context.Background()

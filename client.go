@@ -75,6 +75,30 @@ func (c *Client) PutAll(ctx context.Context) error {
 	})
 }
 
+// DeleteAll removes from the bucket every key that has a corresponding entry
+// in the migration's data/ tree. It mirrors PutAll's path scheme so that
+// calling PutAll in Up and DeleteAll in Down forms a clean round-trip.
+//
+// Only files present in the data/ tree are deleted — other bucket contents
+// are untouched.
+func (c *Client) DeleteAll(ctx context.Context) error {
+	if c.dataFS == nil {
+		return nil
+	}
+	return fs.WalkDir(c.dataFS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if path.Base(p) == ".keep" {
+			return nil
+		}
+		return c.storage.Delete(ctx, c.bucket, p)
+	})
+}
+
 // PutFromPath uploads a file from an arbitrary local path on disk to the given
 // bucket key. Use this for files outside the migration's data/ folder.
 func (c *Client) PutFromPath(ctx context.Context, key, localPath string) error {
