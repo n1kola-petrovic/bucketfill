@@ -121,7 +121,45 @@ func TestEnsureMigrationsEmbed_RespectsDirBasename(t *testing.T) {
 	}
 }
 
-func TestGenerateEntryBinary_RegistersScannedVersions(t *testing.T) {
+func TestGenerateEntryBinary_StaticTemplate(t *testing.T) {
+	root := t.TempDir()
+
+	wrote, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations")
+	if err != nil {
+		t.Fatalf("GenerateEntryBinary: %v", err)
+	}
+	if !wrote {
+		t.Fatal("first call should write")
+	}
+
+	body, _ := os.ReadFile(filepath.Join(root, "cmd", "migrate", "main.go"))
+	for _, want := range []string{
+		"package main",
+		`_ "example.com/demo/migrations"`,
+		"bucketfill.RunCLI",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("entry binary missing %q:\n%s", want, body)
+		}
+	}
+	// Static template must NOT contain per-version registration plumbing.
+	for _, unwanted := range []string{"Version: 1", "v1.Up", "fs.Sub"} {
+		if strings.Contains(string(body), unwanted) {
+			t.Errorf("entry binary should be static; contains %q:\n%s", unwanted, body)
+		}
+	}
+
+	// Idempotent — same content writes nothing.
+	wrote2, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote2 {
+		t.Error("second call should be a no-op")
+	}
+}
+
+func TestGenerateRegistrations_TracksVersions(t *testing.T) {
 	root := t.TempDir()
 	if _, err := bucketfill.ScaffoldVersion(root, "migrations", 1); err != nil {
 		t.Fatal(err)
@@ -134,39 +172,29 @@ func TestGenerateEntryBinary_RegistersScannedVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wrote, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations", versions)
+	wrote, err := bucketfill.GenerateRegistrations(root, "example.com/demo", "migrations", versions)
 	if err != nil {
-		t.Fatalf("GenerateEntryBinary: %v", err)
+		t.Fatalf("GenerateRegistrations: %v", err)
 	}
 	if !wrote {
 		t.Fatal("first call should write")
 	}
 
-	body, _ := os.ReadFile(filepath.Join(root, "cmd", "migrate", "main.go"))
+	body, _ := os.ReadFile(filepath.Join(root, "migrations", "register.go"))
 	for _, want := range []string{
-		"package main",
+		"package migrations",
 		"DO NOT EDIT",
-		`migrations "example.com/demo/migrations"`,
 		`v1 "example.com/demo/migrations/v1"`,
 		`v2 "example.com/demo/migrations/v2"`,
+		"func init()",
 		"Version: 1",
 		"Version: 2",
 		"v1.Up",
 		"v2.Down",
-		`fs.Sub(migrations.FS, p)`,
-		"bucketfill.RunCLI",
+		`fs.Sub(FS, p)`,
 	} {
 		if !strings.Contains(string(body), want) {
-			t.Errorf("entry binary missing %q:\n%s", want, body)
+			t.Errorf("register.go missing %q:\n%s", want, body)
 		}
-	}
-
-	// Idempotent — second call with same versions writes no changes.
-	wrote2, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations", versions)
-	if err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	if wrote2 {
-		t.Error("second call with identical versions should be a no-op")
 	}
 }

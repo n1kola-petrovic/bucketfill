@@ -4,7 +4,7 @@ Versioned seeds and migrations for object storage — like `golang-migrate` for 
 
 Each version lives in `migrations/v<N>/` with a `data/` folder (whose nesting mirrors the bucket layout) plus `up.go` and `down.go` Go files. The scaffolded `up.go` defaults to `c.PutAll(ctx)` (upload the whole `data/` tree) and `down.go` defaults to `c.DeleteAll(ctx)` (remove the same files) — but they're real Go files you can edit when a particular version needs custom logic.
 
-A single `migrations/embed.go` covers every version via one `//go:embed all:v*` glob, and `cmd/migrate/main.go` is regenerated automatically as you add versions, so you never edit it by hand. Apply with `bucketfill up`, roll back with `bucketfill down`. State is tracked inside the bucket itself.
+A single `migrations/embed.go` covers every version via one `//go:embed all:v*` glob. A second top-level file, `migrations/register.go`, holds the `init()` that wires each version up — bucketfill rewrites just that one file when you add a version. `cmd/migrate/main.go` is fully static and never changes. Apply with `bucketfill up`, roll back with `bucketfill down`. State is tracked inside the bucket itself.
 
 `bucketfill` ships as both a **CLI** and a **Go library** — pick whichever fits.
 
@@ -35,12 +35,15 @@ bucketfill init             # writes bucketfill.yaml
 # edit bucketfill.yaml — set provider, bucket, optionally rename migrationDir
 
 bucketfill new              # creates migrations/v1/{up.go, down.go, data/}
-                            # also writes migrations/embed.go + cmd/migrate/main.go
+                            # plus three top-level files (one-time):
+                            #   migrations/embed.go      — static
+                            #   migrations/register.go   — auto-managed
+                            #   cmd/migrate/main.go      — static
 # drop your assets into migrations/v1/data/<wherever you want them in the bucket>
 bucketfill up               # apply all pending migrations
 
 bucketfill new              # creates migrations/v2/{up.go, down.go, data/}
-                            # main.go is regenerated to register v2
+                            # only migrations/register.go gets rewritten
 # drop files into migrations/v2/data/
 bucketfill up               # picks up v2
 
@@ -49,7 +52,7 @@ bucketfill down             # roll back the most recent migration
 bucketfill down --to 0      # roll back everything
 ```
 
-The default `up.go` body is `c.PutAll(ctx)`; the default `down.go` is `c.DeleteAll(ctx)`. Edit either file to customize that version's logic. `migrations/embed.go` (the single `//go:embed all:v*`) is created once and never touched again. `cmd/migrate/main.go` is regenerated on every up/down/status to register whatever versions exist — you never edit it by hand.
+The default `up.go` body is `c.PutAll(ctx)`; the default `down.go` is `c.DeleteAll(ctx)`. Edit either file when that version needs custom logic. The two static top-level files (`migrations/embed.go` and `cmd/migrate/main.go`) are written once on first `bucketfill new` and never touched again. `migrations/register.go` is the only auto-managed file — bucketfill rewrites it whenever versions are added or removed, so its `init()` registers each `v<N>/`. You never hand-edit it.
 
 `bucketfill init` only writes the yaml. The migrations directory is created the first time you run `bucketfill new`, using whatever `migrationDir` says in your config — so feel free to rename it from `migrations` to `db/seeds`, `bucket-migrations`, or whatever fits your project.
 
@@ -62,7 +65,8 @@ my-project/
 ├── bucketfill.yaml            # provider, bucket, migrationDir
 ├── go.mod
 ├── migrations/
-│   ├── embed.go               # one file, scaffolded once; //go:embed all:v*
+│   ├── embed.go               # static, one-time;  //go:embed all:v*
+│   ├── register.go            # auto-managed;  init() registers each v<N>/
 │   ├── v1/
 │   │   ├── up.go              # func Up(ctx, *bucketfill.Client) error  — defaults to PutAll
 │   │   ├── down.go            # func Down(ctx, *bucketfill.Client) error — defaults to DeleteAll
@@ -73,19 +77,27 @@ my-project/
 │       ├── down.go
 │       └── data/...
 └── cmd/migrate/
-    └── main.go                # auto-regenerated to register every v<N>/
+    └── main.go                # static, one-time;  blank-imports migrations
 ```
+
+**Three files at the top of the project are scaffolded once and have clear roles:**
+
+| File | Behavior |
+|---|---|
+| `migrations/embed.go` | Static. Just `//go:embed all:v*`. Written on first `bucketfill new`. |
+| `migrations/register.go` | Auto-managed. Bucketfill rewrites this when versions are added/removed — its `init()` calls `bucketfill.Register(...)` for each `v<N>/`. **You never edit it.** |
+| `cmd/migrate/main.go` | Static. Blank-imports `migrations` (which fires `register.go`'s `init()`) and runs the CLI dispatcher. Written once, never changes. |
 
 **Adding a new migration version:**
 
 ```bash
 bucketfill new          # creates migrations/v<N+1>/{up.go, down.go, data/}
-                        # main.go is regenerated to register v<N+1>
+                        # rewrites migrations/register.go to include v<N+1>
 # drop your files into migrations/v<N+1>/data/
 bucketfill up
 ```
 
-You only edit `up.go`/`down.go` if that specific version needs logic beyond the defaults. The single `migrations/embed.go` and the auto-regenerated `cmd/migrate/main.go` mean you never hand-write the version embed or registration boilerplate.
+You only edit `up.go`/`down.go` when that specific version needs logic beyond the defaults. No registration code to write, no embed boilerplate per version.
 
 ## Writing a custom migration
 
@@ -117,7 +129,7 @@ func Up(ctx context.Context, c *bucketfill.Client) error {
 }
 ```
 
-The Client is scoped to the bucket configured in `bucketfill.yaml`, with `c.Put` / `c.PutAll` / `c.DeleteAll` resolving sources from this version's `data/` subtree (wired in via `fs.Sub` on the top-level embed.FS).
+The Client is scoped to the bucket configured in `bucketfill.yaml`, with `c.Put` / `c.PutAll` / `c.DeleteAll` resolving sources from this version's `data/` subtree. `migrations/register.go` does the wiring: for each `v<N>/`, it computes `fs.Sub(FS, "v<N>/data")` from the top-level embed and passes that as the migration's `Data` field.
 
 ### Client API
 
@@ -180,46 +192,52 @@ Uses [`aws-sdk-go-v2`](https://pkg.go.dev/github.com/aws/aws-sdk-go-v2). Credent
 
 ## Library use
 
-The default flow is to let `bucketfill new` regenerate `cmd/migrate/main.go` for you. If you'd rather drive things by hand — e.g., from your own CLI or as a startup hook — register each version explicitly:
+The default flow is: `bucketfill new` writes both static files plus `migrations/register.go`'s `init()`, and you never touch them. If you'd rather drive things by hand — e.g., embed migrations into your own server or CLI — the registrations are just normal `bucketfill.Register(...)` calls. The scaffolded `migrations/register.go` is exactly what you'd write yourself:
+
+```go
+// migrations/register.go (scaffolded; equivalent to what you'd write by hand)
+package migrations
+
+import (
+    "io/fs"
+
+    "github.com/n1kola-petrovic/bucketfill"
+
+    v1 "example.com/myapp/migrations/v1"
+    v2 "example.com/myapp/migrations/v2"
+)
+
+func init() {
+    sub := func(p string) fs.FS { s, _ := fs.Sub(FS, p); return s }
+    bucketfill.Register(&bucketfill.Migration{Version: 1, Up: v1.Up, Down: v1.Down, Data: sub("v1/data")})
+    bucketfill.Register(&bucketfill.Migration{Version: 2, Up: v2.Up, Down: v2.Down, Data: sub("v2/data")})
+}
+```
+
+To run programmatically, blank-import the migrations package (so its `init()` runs) and call `bucketfill.Up`:
 
 ```go
 package main
 
 import (
     "context"
-    "io/fs"
     "log"
 
     "github.com/n1kola-petrovic/bucketfill"
-
-    // Blank-import each provider you want available:
     _ "github.com/n1kola-petrovic/bucketfill/provider/gcs"
     _ "github.com/n1kola-petrovic/bucketfill/provider/s3"
 
-    "example.com/myapp/migrations"
-    v1 "example.com/myapp/migrations/v1"
-    v2 "example.com/myapp/migrations/v2"
+    _ "example.com/myapp/migrations"  // side-effect: registers all versions
 )
 
 func main() {
-    ctx := context.Background()
-
-    sub := func(p string) fs.FS { s, _ := fs.Sub(migrations.FS, p); return s }
-
-    bucketfill.Register(&bucketfill.Migration{Version: 1, Up: v1.Up, Down: v1.Down, Data: sub("v1/data")})
-    bucketfill.Register(&bucketfill.Migration{Version: 2, Up: v2.Up, Down: v2.Down, Data: sub("v2/data")})
-
     cfg, err := bucketfill.LoadConfig(bucketfill.Overrides{})
-    if err != nil {
-        log.Fatal(err)
-    }
-    if err := bucketfill.Up(ctx, cfg); err != nil {
-        log.Fatal(err)
-    }
+    if err != nil { log.Fatal(err) }
+    if err := bucketfill.Up(context.Background(), cfg); err != nil { log.Fatal(err) }
 }
 ```
 
-There's also a `bucketfill.RegisterFS(fsys fs.FS)` helper that scans an embed.FS and auto-registers every `v<N>/data` it finds with the default `PutAll`/`DeleteAll` — useful when you don't need per-version Go code at all and want the absolute minimum boilerplate. It skips any version already added via `Register`, so the two patterns mix freely.
+There's also a `bucketfill.RegisterFS(fsys fs.FS)` helper that scans an embed.FS and auto-registers every `v<N>/data` it finds with the default `PutAll`/`DeleteAll` — useful when you don't want per-version Go code at all. It skips any version already added via `Register`, so the two patterns mix freely.
 
 Top-level functions: `bucketfill.Up(ctx, cfg)`, `bucketfill.Down(ctx, cfg, DownOpts{To: 0})`, `bucketfill.Status(ctx, cfg)`. For finer control — including plugging in your own structured logger — build the pieces yourself:
 
@@ -245,11 +263,11 @@ State (`{version, appliedAt}`) is stored in the bucket itself as `_bucketfill_st
 
 Versions must be contiguous: registering v1 and v3 with no v2 errors out before any migration runs. This catches mistakes like accidentally deleted folders.
 
-Each version's `data/` subtree is exposed as an `fs.FS` rooted at `migrations/v<N>/data` via `fs.Sub` on the top-level embed. The default `Up`/`Down` walk that subtree to upload/delete; `RegisterFS` is what wires it up at runtime.
+Each version's `data/` subtree is exposed as an `fs.FS` rooted at `migrations/v<N>/data` via `fs.Sub` on the top-level embed. The default `Up`/`Down` walk that subtree to upload/delete.
 
-The CLI doesn't actually run migrations itself. On the first `bucketfill new` it scaffolds `migrations/embed.go` (the single `//go:embed all:v*`). On every `bucketfill new` / `up` / `down` / `status` it regenerates `cmd/migrate/main.go` to import each `v<N>` package and call `bucketfill.Register` with that package's `Up`/`Down` plus a `fs.Sub(migrations.FS, "v<N>/data")` for the data subtree. Then it runs `go mod tidy` and shells out to `go run ./cmd/migrate <subcommand>`.
+The CLI doesn't actually run migrations itself. On `bucketfill new` it scaffolds three top-level files once (`migrations/embed.go`, `migrations/register.go`, `cmd/migrate/main.go`) plus the per-version `v<N>/{up.go, down.go, data/}`. On every subsequent `bucketfill new` / `up` / `down` / `status`, only `migrations/register.go` is rewritten to reflect the current version set; the other two stay frozen. Then it runs `go mod tidy` and shells out to `go run ./cmd/migrate <subcommand>`.
 
-That's why adding a new version means just `bucketfill new` + drop files into `data/`: the per-version `up.go`/`down.go` come pre-filled with sensible defaults, the embed glob picks up the new folder at compile time, and the regenerated main.go wires everything together.
+That's why adding a new version means just `bucketfill new` + drop files into `data/`: the per-version `up.go`/`down.go` come pre-filled with sensible defaults, the embed glob picks up the new folder at compile time, and `register.go`'s `init()` wires it into the global registry that `cmd/migrate/main.go` triggers via blank import.
 
 ## Status
 

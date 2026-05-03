@@ -42,16 +42,20 @@ var newCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("bucketfill: this command must run from a Go module: %w", err)
 		}
-		// Re-scan after scaffolding so the regenerated main.go includes the new
-		// version. Safe even on initial scaffold (returns just v1).
+		// Re-scan after scaffolding so register.go's init() picks up the new version.
 		versions, err := bucketfill.Scan(cfg.MigrationDir)
 		if err != nil {
 			return err
 		}
-		if wrote, err := bucketfill.GenerateEntryBinary(".", modulePath, cfg.MigrationDir, versions); err != nil {
+		if wrote, err := bucketfill.GenerateEntryBinary(".", modulePath, cfg.MigrationDir); err != nil {
 			return err
 		} else if wrote {
-			fmt.Printf("updated %s/main.go (now registers v1..v%d)\n", bucketfill.EntryBinaryPath, next)
+			fmt.Printf("created %s/main.go (static — never edited again)\n", bucketfill.EntryBinaryPath)
+		}
+		if wrote, err := bucketfill.GenerateRegistrations(".", modulePath, cfg.MigrationDir, versions); err != nil {
+			return err
+		} else if wrote {
+			fmt.Printf("updated %s/register.go (now registers v1..v%d)\n", filepath.ToSlash(cfg.MigrationDir), next)
 		}
 
 		fmt.Printf("scaffolded v%d at %s\n", next, filepath.ToSlash(dir))
