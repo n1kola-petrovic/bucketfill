@@ -24,20 +24,52 @@ func TestReadModulePath(t *testing.T) {
 	}
 }
 
-func TestScaffoldVersion_CreatesOnlyDataKeep(t *testing.T) {
+func TestScaffoldVersion_CreatesUpDownAndDataKeep(t *testing.T) {
 	root := t.TempDir()
 	dir, err := bucketfill.ScaffoldVersion(root, "migrations", 1)
 	if err != nil {
 		t.Fatalf("ScaffoldVersion: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "data", ".keep")); err != nil {
-		t.Errorf("expected data/.keep: %v", err)
-	}
-	// New scaffold should NOT generate per-version up.go / down.go / embed.go.
-	for _, unwanted := range []string{"up.go", "down.go", "embed.go"} {
-		if _, err := os.Stat(filepath.Join(dir, unwanted)); err == nil {
-			t.Errorf("did not expect %s — that's the old per-version layout", unwanted)
+	for _, want := range []string{"up.go", "down.go", "data/.keep"} {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			t.Errorf("missing %s: %v", want, err)
 		}
+	}
+	// Per-version embed.go is NOT scaffolded — the single top-level
+	// migrations/embed.go covers every version via //go:embed all:v*.
+	if _, err := os.Stat(filepath.Join(dir, "embed.go")); err == nil {
+		t.Error("did not expect per-version embed.go — should be one top-level file")
+	}
+
+	upBody, _ := os.ReadFile(filepath.Join(dir, "up.go"))
+	if !strings.Contains(string(upBody), "func Up(ctx context.Context, c *bucketfill.Client) error") {
+		t.Errorf("up.go missing expected Up signature:\n%s", upBody)
+	}
+	if !strings.Contains(string(upBody), "c.PutAll(ctx)") {
+		t.Errorf("up.go missing default PutAll body:\n%s", upBody)
+	}
+	downBody, _ := os.ReadFile(filepath.Join(dir, "down.go"))
+	if !strings.Contains(string(downBody), "c.DeleteAll(ctx)") {
+		t.Errorf("down.go missing default DeleteAll body:\n%s", downBody)
+	}
+}
+
+func TestScaffoldVersion_DoesNotClobberCustomized(t *testing.T) {
+	root := t.TempDir()
+	dir, err := bucketfill.ScaffoldVersion(root, "migrations", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := []byte("package v1\n\n// user customized\n")
+	if err := os.WriteFile(filepath.Join(dir, "up.go"), custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bucketfill.ScaffoldVersion(root, "migrations", 1); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "up.go"))
+	if string(got) != string(custom) {
+		t.Fatalf("up.go was clobbered:\n%s", got)
 	}
 }
 
@@ -89,9 +121,20 @@ func TestEnsureMigrationsEmbed_RespectsDirBasename(t *testing.T) {
 	}
 }
 
-func TestGenerateEntryBinary_OneTimeStatic(t *testing.T) {
+func TestGenerateEntryBinary_RegistersScannedVersions(t *testing.T) {
 	root := t.TempDir()
-	wrote, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations")
+	if _, err := bucketfill.ScaffoldVersion(root, "migrations", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bucketfill.ScaffoldVersion(root, "migrations", 2); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := bucketfill.Scan(filepath.Join(root, "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wrote, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations", versions)
 	if err != nil {
 		t.Fatalf("GenerateEntryBinary: %v", err)
 	}
@@ -102,25 +145,28 @@ func TestGenerateEntryBinary_OneTimeStatic(t *testing.T) {
 	body, _ := os.ReadFile(filepath.Join(root, "cmd", "migrate", "main.go"))
 	for _, want := range []string{
 		"package main",
+		"DO NOT EDIT",
 		`migrations "example.com/demo/migrations"`,
-		"bucketfill.RegisterFS(migrations.FS)",
+		`v1 "example.com/demo/migrations/v1"`,
+		`v2 "example.com/demo/migrations/v2"`,
+		"Version: 1",
+		"Version: 2",
+		"v1.Up",
+		"v2.Down",
+		`fs.Sub(migrations.FS, p)`,
 		"bucketfill.RunCLI",
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("entry binary missing %q:\n%s", want, body)
 		}
 	}
-	// Should NOT contain per-version registrations.
-	if strings.Contains(string(body), "Version: 1,") {
-		t.Errorf("entry binary should not register versions explicitly:\n%s", body)
-	}
 
-	// Second call must NOT clobber — the file is editable user code.
-	wrote2, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations")
+	// Idempotent — second call with same versions writes no changes.
+	wrote2, err := bucketfill.GenerateEntryBinary(root, "example.com/demo", "migrations", versions)
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if wrote2 {
-		t.Error("second call should be a no-op")
+		t.Error("second call with identical versions should be a no-op")
 	}
 }

@@ -9,15 +9,23 @@ import (
 	"github.com/n1kola-petrovic/bucketfill"
 )
 
-// makeVersionDir creates <root>/<name>/data/.keep — the new minimal layout.
-// up.go/down.go are no longer required.
+// makeVersionDir creates <root>/<name>/{up.go, down.go, data/.keep}.
 func makeVersionDir(t *testing.T, root, name string) {
 	t.Helper()
-	dataDir := filepath.Join(root, name, "data")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dataDir, ".keep"), nil, 0o644); err != nil {
+	pkg := name
+	if !strings.HasPrefix(pkg, "v") {
+		pkg = "v" + pkg
+	}
+	for _, f := range []string{"up.go", "down.go"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("package "+pkg+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "data", ".keep"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -56,16 +64,19 @@ func TestScan_RejectsDuplicates(t *testing.T) {
 	}
 }
 
-func TestScan_AcceptsBareDataLayout(t *testing.T) {
-	// New minimal layout: vN/ contains only data/, no Go files.
+func TestScan_RequiresUpAndDown(t *testing.T) {
 	root := t.TempDir()
-	makeVersionDir(t, root, "v1")
-	dirs, err := bucketfill.Scan(root)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
+	dir := filepath.Join(root, "v1", "data")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if len(dirs) != 1 {
-		t.Fatalf("got %d, want 1", len(dirs))
+	// no up.go / down.go
+	_, err := bucketfill.Scan(root)
+	if err == nil {
+		t.Fatal("expected missing-up.go error")
+	}
+	if !strings.Contains(err.Error(), "up.go") {
+		t.Fatalf("error didn't mention up.go: %v", err)
 	}
 }
 

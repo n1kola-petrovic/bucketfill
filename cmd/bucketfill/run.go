@@ -46,12 +46,12 @@ func runEntryBinary(sub string, extra []string) error {
 		return fmt.Errorf("bucketfill: this command must run from a Go module: %w", err)
 	}
 
-	// Bootstrap the embed.go and entry binary if they don't exist yet (e.g.
-	// projects that scaffolded versions on an older bucketfill release).
+	// Ensure the top-level embed.go exists (one-time, idempotent), then
+	// regenerate cmd/migrate/main.go to reflect the current set of versions.
 	if _, err := bucketfill.EnsureMigrationsEmbed(".", cfg.MigrationDir); err != nil {
 		return err
 	}
-	if _, err := bucketfill.GenerateEntryBinary(".", modulePath, cfg.MigrationDir); err != nil {
+	if _, err := bucketfill.GenerateEntryBinary(".", modulePath, cfg.MigrationDir, versions); err != nil {
 		return err
 	}
 	// Always tidy before `go run` — entry binary's blank-imported provider deps
