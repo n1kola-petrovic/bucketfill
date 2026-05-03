@@ -3,12 +3,31 @@ package bucketfill
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 )
+
+// Logger is a minimal interface bucketfill writes progress messages through.
+// The default implementation prints to os.Stdout in the bucketfill format.
+//
+// To plug in your own logger, implement Logf and pass it via Migrator.WithLogger.
+// A typical adapter for a structured logger:
+//
+//	type adapter struct{ l *mypkg.Logger }
+//	func (a adapter) Logf(format string, args ...any) {
+//	    a.l.Info(fmt.Sprintf(format, args...))
+//	}
+//
+//	m := bucketfill.NewMigrator(client).WithLogger(adapter{l: myLogger})
+type Logger interface {
+	Logf(format string, args ...any)
+}
 
 // Migrator runs registered migrations against a bucket.
 type Migrator struct {
 	client *Client
+	log    Logger // nil = print to os.Stdout
 }
 
 // NewMigrator builds a Migrator that operates via the given Client.
@@ -16,9 +35,31 @@ func NewMigrator(client *Client) *Migrator {
 	return &Migrator{client: client}
 }
 
+// WithLogger returns a copy of m that writes progress through l.
+// Pass nil to restore the default stdout logger.
+func (m *Migrator) WithLogger(l Logger) *Migrator {
+	cp := *m
+	cp.log = l
+	return &cp
+}
+
+func (m *Migrator) logf(format string, args ...any) {
+	if m.log != nil {
+		m.log.Logf(format, args...)
+		return
+	}
+	if !strings.HasSuffix(format, "\n") {
+		format += "\n"
+	}
+	fmt.Fprintf(os.Stdout, format, args...)
+}
+
 // Up applies every registered migration whose version is greater than the
 // current state, in ascending order. State is persisted after each successful
 // step so a mid-run failure leaves a consistent partial state.
+//
+// Returns an error if the registered versions have a gap (e.g. v1 and v3 with
+// no v2) — likely a deleted file, and applying out of sequence is unsafe.
 func (m *Migrator) Up(ctx context.Context) error {
 	state, err := readState(ctx, m.client.storage, m.client.bucket)
 	if err != nil {
@@ -26,6 +67,9 @@ func (m *Migrator) Up(ctx context.Context) error {
 	}
 
 	all := Migrations()
+	if err := checkContiguous(all); err != nil {
+		return err
+	}
 	applied := 0
 
 	for _, mig := range all {
@@ -36,7 +80,7 @@ func (m *Migrator) Up(ctx context.Context) error {
 			return fmt.Errorf("bucketfill: migration v%d has no Up function", mig.Version)
 		}
 
-		fmt.Printf("bucketfill: applying v%d up...\n", mig.Version)
+		m.logf("bucketfill: applying v%d up...", mig.Version)
 		c := m.client.WithData(mig.Data)
 		if err := mig.Up(ctx, c); err != nil {
 			return fmt.Errorf("bucketfill: v%d up failed: %w", mig.Version, err)
@@ -47,12 +91,12 @@ func (m *Migrator) Up(ctx context.Context) error {
 		if err := writeState(ctx, m.client.storage, m.client.bucket, state); err != nil {
 			return fmt.Errorf("bucketfill: v%d save state: %w", mig.Version, err)
 		}
-		fmt.Printf("bucketfill: v%d up applied\n", mig.Version)
+		m.logf("bucketfill: v%d up applied", mig.Version)
 		applied++
 	}
 
 	if applied == 0 {
-		fmt.Println("bucketfill: no pending migrations")
+		m.logf("bucketfill: no pending migrations")
 	}
 	return nil
 }
@@ -64,7 +108,7 @@ func (m *Migrator) Down(ctx context.Context) error {
 		return err
 	}
 	if state.Version == 0 {
-		fmt.Println("bucketfill: no migrations to roll back")
+		m.logf("bucketfill: no migrations to roll back")
 		return nil
 	}
 	return m.DownTo(ctx, prevVersion(Migrations(), state.Version))
@@ -78,11 +122,14 @@ func (m *Migrator) DownTo(ctx context.Context, target int) error {
 		return err
 	}
 	if state.Version <= target {
-		fmt.Printf("bucketfill: already at v%d\n", state.Version)
+		m.logf("bucketfill: already at v%d", state.Version)
 		return nil
 	}
 
 	all := Migrations()
+	if err := checkContiguous(all); err != nil {
+		return err
+	}
 
 	for state.Version > target {
 		mig := findVersion(all, state.Version)
@@ -93,7 +140,7 @@ func (m *Migrator) DownTo(ctx context.Context, target int) error {
 			return fmt.Errorf("bucketfill: migration v%d has no Down function", state.Version)
 		}
 
-		fmt.Printf("bucketfill: rolling back v%d...\n", mig.Version)
+		m.logf("bucketfill: rolling back v%d...", mig.Version)
 		c := m.client.WithData(mig.Data)
 		if err := mig.Down(ctx, c); err != nil {
 			return fmt.Errorf("bucketfill: v%d down failed: %w", mig.Version, err)
@@ -104,7 +151,7 @@ func (m *Migrator) DownTo(ctx context.Context, target int) error {
 		if err := writeState(ctx, m.client.storage, m.client.bucket, state); err != nil {
 			return fmt.Errorf("bucketfill: v%d save state: %w", mig.Version, err)
 		}
-		fmt.Printf("bucketfill: v%d rolled back\n", mig.Version)
+		m.logf("bucketfill: v%d rolled back", mig.Version)
 	}
 	return nil
 }
@@ -116,14 +163,14 @@ func (m *Migrator) Status(ctx context.Context) error {
 		return err
 	}
 	all := Migrations()
-	fmt.Printf("Current version: %d\n", state.Version)
-	fmt.Printf("Registered migrations: %d\n", len(all))
+	m.logf("Current version: %d", state.Version)
+	m.logf("Registered migrations: %d", len(all))
 	for _, mig := range all {
 		status := "pending"
 		if mig.Version <= state.Version {
 			status = "applied"
 		}
-		fmt.Printf("  v%d: %s\n", mig.Version, status)
+		m.logf("  v%d: %s", mig.Version, status)
 	}
 	return nil
 }
@@ -146,4 +193,18 @@ func prevVersion(all []*Migration, v int) int {
 		}
 	}
 	return prev
+}
+
+// checkContiguous returns an error if registered versions have a gap.
+// Versions must form 1, 2, 3, ... with no missing entries — a gap usually
+// means a developer deleted a folder mid-history, and applying out of
+// sequence past that gap is unsafe.
+func checkContiguous(all []*Migration) error {
+	for i, m := range all {
+		want := i + 1
+		if m.Version != want {
+			return fmt.Errorf("bucketfill: gap in migration versions: expected v%d, found v%d", want, m.Version)
+		}
+	}
+	return nil
 }

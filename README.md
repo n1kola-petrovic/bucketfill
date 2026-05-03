@@ -208,18 +208,29 @@ func main() {
 }
 ```
 
-Top-level functions: `bucketfill.Up(ctx, cfg)`, `bucketfill.Down(ctx, cfg, DownOpts{To: 0})`, `bucketfill.Status(ctx, cfg)`. For finer control, build the pieces yourself:
+Top-level functions: `bucketfill.Up(ctx, cfg)`, `bucketfill.Down(ctx, cfg, DownOpts{To: 0})`, `bucketfill.Status(ctx, cfg)`. For finer control — including plugging in your own structured logger — build the pieces yourself:
 
 ```go
 storage, _ := bucketfill.OpenProvider(cfg)
 client  := bucketfill.NewClient(storage, cfg.EffectiveBucket())
-m := bucketfill.NewMigrator(client)
+m := bucketfill.NewMigrator(client).WithLogger(myAdapter)
 m.Up(ctx)         // or m.DownTo(ctx, 3), or m.Status(ctx)
+```
+
+`WithLogger` accepts any `bucketfill.Logger` (a one-method interface: `Logf(format string, args ...any)`). The default writes to `os.Stdout`. A typical adapter for an existing structured logger:
+
+```go
+type mylog struct{ l *mypkg.Logger }
+func (a mylog) Logf(format string, args ...any) {
+    a.l.Info(fmt.Sprintf(format, args...))
+}
 ```
 
 ## How it works
 
 State (`{version, appliedAt}`) is stored in the bucket itself as `_bucketfill_state.json`. Up/Down read it, run any pending migration, **persist the new state after each successful step**, and continue. A failure mid-run leaves you with a consistent partial state — the next `bucketfill up` resumes from there.
+
+Versions must be contiguous: registering v1 and v3 with no v2 errors out before any migration runs. This catches mistakes like accidentally deleted folders.
 
 The CLI doesn't actually run migrations; it generates a tiny `cmd/migrate/main.go` in your project that imports each version package + the cloud providers, then shells out to `go run ./cmd/migrate <subcommand>`. This is the only way to dispatch into Go code that's defined in your repo (Go has no runtime equivalent to JS's dynamic `import`). The generated file is small, deterministic, and safe to read or commit.
 

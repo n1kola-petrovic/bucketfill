@@ -3,8 +3,10 @@ package bucketfill_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/n1kola-petrovic/bucketfill"
@@ -172,6 +174,60 @@ func TestMigratorUp_FailureLeavesPartialState(t *testing.T) {
 	if err := m.Up(context.Background()); err != nil {
 		t.Fatalf("second Up: %v", err)
 	}
+}
+
+func TestMigratorUp_GapErrors(t *testing.T) {
+	m, _ := newMigratorEnv(t)
+
+	// Register v1 and v3 — no v2.
+	bucketfill.Register(&bucketfill.Migration{
+		Version: 1,
+		Up:      func(ctx context.Context, c *bucketfill.Client) error { return nil },
+		Down:    func(ctx context.Context, c *bucketfill.Client) error { return nil },
+	})
+	bucketfill.Register(&bucketfill.Migration{
+		Version: 3,
+		Up:      func(ctx context.Context, c *bucketfill.Client) error { return nil },
+		Down:    func(ctx context.Context, c *bucketfill.Client) error { return nil },
+	})
+
+	err := m.Up(context.Background())
+	if err == nil {
+		t.Fatal("expected gap error")
+	}
+	if !strings.Contains(err.Error(), "gap") {
+		t.Fatalf("error didn't mention gap: %v", err)
+	}
+}
+
+func TestMigrator_WithLogger(t *testing.T) {
+	m, _ := newMigratorEnv(t)
+	bucketfill.Register(&bucketfill.Migration{
+		Version: 1,
+		Up:      func(ctx context.Context, c *bucketfill.Client) error { return nil },
+		Down:    func(ctx context.Context, c *bucketfill.Client) error { return nil },
+	})
+
+	captured := &captureLogger{}
+	mWithLog := m.WithLogger(captured)
+	if err := mWithLog.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.lines) == 0 {
+		t.Fatal("expected captured log lines")
+	}
+	joined := strings.Join(captured.lines, "\n")
+	if !strings.Contains(joined, "applying v1") {
+		t.Fatalf("expected 'applying v1' in captured logs, got: %s", joined)
+	}
+}
+
+type captureLogger struct {
+	lines []string
+}
+
+func (c *captureLogger) Logf(format string, args ...any) {
+	c.lines = append(c.lines, fmt.Sprintf(format, args...))
 }
 
 func TestRegister_DuplicateVersionPanics(t *testing.T) {
